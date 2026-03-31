@@ -1,0 +1,91 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKER_HUB_USER = "your-dockerhub-username" // Change this
+        IMAGE_NAME = "blue-green-sample-app"
+        IMAGE_TAG = "${env.BUILD_NUMBER}"
+        FULL_IMAGE_NAME = "${DOCKER_HUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
+        K8S_NAMESPACE = "default"
+    }
+
+    stages {
+        stage('Clone Repository') {
+            steps {
+                // Jenkins usually clones the repo automatically if configured as a Pipeline script from SCM
+                checkout scm
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    echo "Building Docker Image: ${FULL_IMAGE_NAME}"
+                    sh "docker build -t ${FULL_IMAGE_NAME} -f docker/Dockerfile ."
+                }
+            }
+        }
+
+        stage('Push to Docker Hub') {
+            steps {
+                script {
+                    // Requires 'docker-hub-credentials' to be defined in Jenkins Credentials
+                    withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                        sh "echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin"
+                        sh "docker push ${FULL_IMAGE_NAME}"
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to GREEN') {
+            steps {
+                script {
+                    echo "Deploying version ${IMAGE_TAG} to Green Environment"
+                    // Replace placeholder image in YAML
+                    sh "sed -i 's|\${DOCKER_IMAGE_GREEN}|${FULL_IMAGE_NAME}|g' k8s/deployment-green.yaml"
+                    sh "kubectl apply -f k8s/deployment-green.yaml"
+                }
+            }
+        }
+
+        stage('Health Check') {
+            steps {
+                script {
+                    echo "Verifying Green Deployment..."
+                    // Wait for rollout to complete
+                    sh "kubectl rollout status deployment/app-green --timeout=90s"
+                    
+                    // Simple curl check (assumes pod is reachable or using port-forwarding/service IP)
+                    // For demo purposes, we rely on 'rollout status'
+                }
+            }
+        }
+
+        stage('Switch Traffic to GREEN') {
+            steps {
+                script {
+                    echo "Switching Service Selector to Green"
+                    // Update the service selector to point to green
+                    sh "kubectl patch service sample-app-service -p '{\"spec\":{\"selector\":{\"version\":\"green\"}}}'"
+                }
+            }
+        }
+
+        stage('Cleanup Blue (Optional)') {
+            steps {
+                input message: 'Do you want to decommission the Blue deployment?', ok: 'Yes, cleanup'
+                sh "kubectl delete deployment app-blue"
+            }
+        }
+    }
+
+    post {
+        failure {
+            script {
+                echo "Deployment failed! Rolling back to Blue..."
+                sh "kubectl patch service sample-app-service -p '{\"spec\":{\"selector\":{\"version\":\"blue\"}}}'"
+            }
+        }
+    }
+}
