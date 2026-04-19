@@ -33,12 +33,12 @@ graph TD
     B -->|Selector: color=blue| C[Blue Pods]
     B -->|Selector: color=green| D[Green Pods]
     
-    SubGraph Jenkins Pipeline
+    subgraph "Jenkins Pipeline"
         E[Source] --> F[Build]
         F --> G[Push Registry]
         G --> H[Deploy Green]
         H --> I[Smoke Tests]
-    End
+    end
     
     I -->|Ready| A
 ```
