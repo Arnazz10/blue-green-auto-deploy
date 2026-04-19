@@ -1,23 +1,46 @@
-# Use official Node.js alpine image for a small footprint
-FROM node:18-alpine
+# Multi-stage build for Next.js ShiftOps Dashboard
+FROM node:18-alpine AS base
 
-# Set working directory
-WORKDIR /usr/src/app
+# Install dependencies only when needed
+FROM base AS deps
+RUN apk add --no-cache libc6-compat
+WORKDIR /app
 
-# Copy package files first to leverage Docker layer caching
-COPY app/package*.json ./
+COPY package.json package-lock.json ./
+RUN npm ci
 
-# Install only production dependencies
-RUN npm install --only=production
+# Rebuild the source code only when needed
+FROM base AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
 
-# Copy the rest of the application code
-COPY app/ .
+# Disable telemetry during build
+ENV NEXT_TELEMETRY_DISABLED 1
 
-# Expose the application port
+RUN npm run build
+
+# Production image, copy all the files and run next
+FROM base AS runner
+WORKDIR /app
+
+ENV NODE_ENV production
+ENV NEXT_TELEMETRY_DISABLED 1
+
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 nextjs
+
+# Set the correct permission for prerender cache
+COPY --from=builder /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+USER nextjs
+
 EXPOSE 3000
 
-# Use non-root user for security
-USER node
+ENV PORT 3000
+# set hostname to localhost
+ENV HOSTNAME "0.0.0.0"
 
-# Start the application
-CMD [ "npm", "start" ]
+CMD ["node", "server.js"]

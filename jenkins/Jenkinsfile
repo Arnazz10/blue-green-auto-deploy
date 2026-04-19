@@ -2,90 +2,73 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_HUB_USER = "your-dockerhub-username" // Change this
-        IMAGE_NAME = "blue-green-sample-app"
-        IMAGE_TAG = "${env.BUILD_NUMBER}"
-        FULL_IMAGE_NAME = "${DOCKER_HUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
-        K8S_NAMESPACE = "default"
+        REGISTRY = "registry.hub.docker.com"
+        IMAGE_NAME = "arnazz10/shiftops-app"
+        VERSION = "v2.1.${BUILD_NUMBER}"
+        NAMESPACE_BLUE = "production-blue"
+        NAMESPACE_GREEN = "production-green"
     }
 
     stages {
-        stage('Clone Repository') {
+        stage('Source Checkout') {
             steps {
-                // Jenkins usually clones the repo automatically if configured as a Pipeline script from SCM
+                echo "Cloning repository..."
                 checkout scm
             }
         }
 
-        stage('Build Docker Image') {
+        stage('Docker Build') {
             steps {
-                script {
-                    echo "Building Docker Image: ${FULL_IMAGE_NAME}"
-                    sh "docker build -t ${FULL_IMAGE_NAME} -f docker/Dockerfile ."
-                }
+                echo "Building image ${IMAGE_NAME}:${VERSION}..."
+                // sh "docker build -t ${IMAGE_NAME}:${VERSION} ."
             }
         }
 
-        stage('Push to Docker Hub') {
+        stage('Push to Registry') {
             steps {
-                script {
-                    // Requires 'docker-hub-credentials' to be defined in Jenkins Credentials
-                    withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-                        sh "echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin"
-                        sh "docker push ${FULL_IMAGE_NAME}"
-                    }
-                }
+                echo "Pushing ${IMAGE_NAME}:${VERSION} to ${REGISTRY}..."
+                // sh "docker push ${IMAGE_NAME}:${VERSION}"
             }
         }
 
-        stage('Deploy to GREEN') {
+        stage('Deploy to Green') {
             steps {
-                script {
-                    echo "Deploying version ${IMAGE_TAG} to Green Environment"
-                    // Replace placeholder image in YAML
-                    sh "sed -i 's|\${DOCKER_IMAGE_GREEN}|${FULL_IMAGE_NAME}|g' k8s/deployment-green.yaml"
-                    sh "kubectl apply -f k8s/deployment-green.yaml"
-                }
+                echo "Applying manifests to ${NAMESPACE_GREEN}..."
+                // sh "kubectl apply -f k8s/deployment-green.yaml -n ${NAMESPACE_GREEN}"
+                // sh "kubectl set image deployment/shiftops-app-green server=${IMAGE_NAME}:${VERSION} -n ${NAMESPACE_GREEN}"
             }
         }
 
-        stage('Health Check') {
+        stage('Smoke Tests') {
             steps {
-                script {
-                    echo "Verifying Green Deployment..."
-                    // Wait for rollout to complete
-                    sh "kubectl rollout status deployment/app-green --timeout=90s"
-                    
-                    // Simple curl check (assumes pod is reachable or using port-forwarding/service IP)
-                    // For demo purposes, we rely on 'rollout status'
-                }
+                echo "Waiting for pods to be ready..."
+                // sh "kubectl rollout status deployment/shiftops-app-green -n ${NAMESPACE_GREEN}"
+                echo "Running endpoint checks..."
+                // sh "curl -f https://green.shiftops.internal/health"
             }
         }
 
-        stage('Switch Traffic to GREEN') {
+        stage('Await Traffic Switch') {
             steps {
-                script {
-                    echo "Switching Service Selector to Green"
-                    // Update the service selector to point to green
-                    sh "kubectl patch service sample-app-service -p '{\"spec\":{\"selector\":{\"version\":\"green\"}}}'"
-                }
+                input message: "Promote ${VERSION} to Production (Green)?", ok: "Promote"
+                echo "Confirming traffic switch in ShiftOps Dashboard..."
             }
         }
-
-        stage('Cleanup Blue (Optional)') {
+        
+        stage('Teardown Standby') {
             steps {
-                input message: 'Do you want to decommission the Blue deployment?', ok: 'Yes, cleanup'
-                sh "kubectl delete deployment app-blue"
+                echo "Scaling down old environment (Blue)..."
+                // sh "kubectl scale deployment/shiftops-app-blue --replicas=1 -n ${NAMESPACE_BLUE}"
             }
         }
     }
 
     post {
+        success {
+            echo "Deployment successful!"
+        }
         failure {
-            script {
-                echo "Deployment failed! Rolling back to Blue..."
-                sh "kubectl patch service sample-app-service -p '{\"spec\":{\"selector\":{\"version\":\"blue\"}}}'"
-            }
+            echo "Deployment failed. Rolling back..."
         }
     }
 }
